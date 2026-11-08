@@ -1,0 +1,22 @@
+# артефакты сборки
+/autofan
+/autofan-*
+/dist/
+*.exe
+
+# локальное состояние и замеры, которых не должно быть в репозитории
+/state.json
+/sample*.csv
+/lt.*.log
+*.local.conf
+
+# секреты: пароль BMC никогда не кладётся в репозиторий
+*.pass
+/secrets/
+.env
+
+# редакторы
+*.swp
+.idea/
+.vscode/
+__pycache__/

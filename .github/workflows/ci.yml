@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: формат
+        run: test -z "$(gofmt -l .)" || { echo "нужен gofmt -w *.go"; gofmt -l .; exit 1; }
+
+      - name: статический анализ
+        run: go vet ./...
+
+      - name: тесты
+        run: go test -cover ./...
+
+      - name: сборка
+        run: go build -o autofan . && ./autofan -version
+
+      # скрипты должны оставаться рабочими: синтаксис проверяется без железа
+      - name: синтаксис скриптов
+        run: |
+          bash -n scripts/*.sh install.sh
+          python3 -m py_compile scripts/*.py
+
+      - name: бинарник
+        uses: actions/upload-artifact@v4
+        with:
+          name: autofan-linux-amd64
+          path: autofan
+          if-no-files-found: error

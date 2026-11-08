@@ -1,0 +1,20 @@
+[Unit]
+Description=autofan - контроллер корпусных вентиляторов TYAN S8030 (BMC PWM2-5)
+Documentation=https://github.com/sonmihpc/AutoFan
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/autofan -c /etc/autofan/autofan.conf
+# перечитать конфиг без остановки сервиса
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+# SIGTERM = штатная остановка с возвратом на on_exit duty
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Nice=0
+
+[Install]
+WantedBy=multi-user.target

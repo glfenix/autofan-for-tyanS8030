@@ -1,0 +1,101 @@
+# Пример конфигурации в YAML (эквивалент autofan.conf).
+# autofan выбирает синтаксис по расширению: .yaml/.yml -> YAML, иначе KEY=VALUE.
+poll_interval: 25
+fast_poll_interval: 5
+critical_temp: 80
+failsafe:
+  duty: 85
+startup_duty: 35             # скорость при запуске сервиса
+on_exit:
+  duty: 35
+state:
+  path: /var/lib/autofan/state.json
+
+verify_rpm: true
+verify_delay_seconds: 15
+rpm_per_duty: 17.2
+rpm_offset: 202
+rpm_warn_factor: 0.30
+
+bmc:
+  interface: open           # open = локально через /dev/ipmi0
+  device: /dev/ipmi0
+  profile: tyan64
+  timeout: 20
+  retries: 2
+  # lanplus: host / username / password_file (chmod 600) / cipher_suite
+
+sources:
+  - name: gpu
+    type: gpu
+    vm: 104                 # температура из гостя PVE через qemu-guest-agent
+    agg: max
+    optional: true
+  - name: cpu_tctl
+    type: bmc
+    sensor: CPU_Tctl_Value
+  - name: air_outlet
+    type: bmc
+    sensor: SYS_Air_Outlet
+    floor: 37               # учитывать только выше 37C (в простое 31-35C)
+  - name: air_inlet
+    type: bmc
+    sensor: MB_Air_Inlet
+    floor: 42               # температура комнаты
+  - name: cpu_mosfet
+    type: bmc
+    sensor: CPU_MOSFET
+    floor: 54
+  - name: dimm_mosfet
+    type: bmc
+    sensors: [DIMM_MOSFET_1, DIMM_MOSFET_2]
+    agg: max
+    floor: 56
+  - name: soc_mosfet
+    type: bmc
+    sensor: CPU_SOC_MOSFET
+    floor: 50
+  - name: dimm_channels
+    type: bmc
+    agg: max
+    floor: 58
+    sensors: [P0_UMC0_CH_A0, P0_UMC1_CH_B0, P0_UMC2_CH_D0, P0_UMC3_CH_C0,
+              P0_UMC4_CH_H0, P0_UMC5_CH_G0, P0_UMC6_CH_E0, P0_UMC7_CH_F0]
+  - name: nvme
+    type: bmc
+    sensors: [M.2/M.3_NVMe_0, M.2/M.3_NVMe_1]
+    agg: max
+    floor: 50
+
+groups:
+  - name: chassis
+    pwm_ids: [2, 3, 4, 5]   # SYS_FAN_1..4
+    tach: [SYS_FAN_1, SYS_FAN_2, SYS_FAN_3, SYS_FAN_4]
+    sources: [gpu, cpu_tctl, air_outlet, air_inlet, cpu_mosfet, dimm_mosfet, soc_mosfet, dimm_channels, nvme]
+    agg: max
+    startup_duty: 35
+    min_duty: 35
+    max_duty: 100
+    step: 5
+    dwell_seconds: 120
+    failsafe_duty: 85
+    critical_temp: 80
+    curve:
+      mode: step
+      points:
+        - {temp: 45, duty: 35}
+        - {temp: 50, duty: 45}
+        - {temp: 60, duty: 55}
+        - {temp: 70, duty: 70}
+        - {temp: 78, duty: 85}
+        - {temp: 85, duty: 100}
+    # Упреждение по мощности GPU: выхлоп карты идёт на зону CPU/VRM/DIMM, а
+    # температура ядра карты ничего не показывает (её охлаждение справляется).
+    # Итог = max(кривая по температурам, нижняя граница по ваттам).
+    power_curve:
+      mode: step
+      points:
+        - {temp: 80, duty: 40}      # temp здесь = ватты
+        - {temp: 150, duty: 50}
+        - {temp: 220, duty: 60}
+        - {temp: 300, duty: 75}
