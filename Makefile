@@ -40,9 +40,9 @@ dist: build
 	tar czf $(DIST).tgz $(BIN) install.sh examples scripts README.md LICENSE NOTICE
 	@echo "готово: $(DIST).tgz"
 
-# установка на локальный/удалённый хост: make deploy HOST=root@192.168.1.10
+# установка на локальный/удалённый хост: make deploy HOST=<user>@192.168.1.10
 deploy: dist
-	@test -n "$(HOST)" || { echo "нужен HOST=... (например HOST=root@192.168.1.10)"; exit 1; }
+	@test -n "$(HOST)" || { echo "нужен HOST=... (например HOST=<user>@192.168.1.10)"; exit 1; }
 	scp -q $(DIST).tgz $(HOST):/opt/
 	ssh $(HOST) 'cd /opt && tar xzf $(notdir $(DIST)).tgz && cd $(BIN)-$(VERSION) && ./install.sh'
 

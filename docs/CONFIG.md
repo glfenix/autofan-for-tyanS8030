@@ -18,6 +18,23 @@
 остановки процесса. Ошибка в конфиге при этом не роняет демон: в журнал попадает
 сообщение, и продолжается работа по прежнему.
 
+## Минимальный рабочий набор
+
+| что | ключи | проверка |
+|---|---|---|
+| чем говорить с BMC | `BMC_INTERFACE=open` + `BMC_DEVICE` **или** `BMC_INTERFACE=lanplus` + `BMC_HOST` + `BMC_USER` + `BMC_PASSWORD_FILE` | `ipmitool -I open sdr info` / `ipmitool -I lanplus -H <хост> -U <user> -f <файл> sdr info` |
+| что мерить (≥1) | `SRCn_NAME`, `SRCn_TYPE` (`gpu`\|`bmc`\|`hwmon`), `SRCn_SENSOR` или `SRCn_SENSORS` | `autofan probe` — покажет значения всех источников |
+| куда писать (≥1) | `Gn_NAME`, `Gn_PWM`, `Gn_SOURCES`, `Gn_CURVE` | то же; плюс валидация: PWM 0..15, группа знает свои источники, кривая внутри `MIN_DUTY..MAX_DUTY` |
+
+Тексты этих ошибок — в журнал; из-за них `autofan` отказывается стартовать: нет
+устройства `/dev/ipmi0`, нет host/username для `lanplus`, нет `password_file`,
+нет групп, нет источников, неизвестный источник в группе, пустая кривая.
+
+Пароль — только `BMC_PASSWORD_FILE` (`chmod 600`, владелец root): `-P`/`-p` у
+ipmitool не используется никогда — пароль в аргументах читается любым
+`ps auxwwef` на хосте. Логины и пароли в git не кладутся: `.gitignore` отсекает
+`*.pass`, `secrets/`, `.env`.
+
 ## Общее
 
 | ключ | по умолчанию | смысл |

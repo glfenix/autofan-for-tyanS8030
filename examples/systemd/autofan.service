@@ -1,6 +1,6 @@
 [Unit]
 Description=autofan - контроллер корпусных вентиляторов TYAN S8030 (BMC PWM2-5)
-Documentation=https://github.com/sonmihpc/AutoFan
+Documentation=https://github.com/glfenix/autofan-for-tyanS8030/blob/main/docs/CONFIG.md
 After=multi-user.target
 StartLimitIntervalSec=0
 

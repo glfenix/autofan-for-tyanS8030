@@ -1,5 +1,9 @@
 # autofan — управление корпусными вентиляторами сервера TYAN S8030 через IPMI
 
+[![CI](https://github.com/glfenix/autofan-for-tyanS8030/actions/workflows/ci.yml/badge.svg)](https://github.com/glfenix/autofan-for-tyanS8030/actions/workflows/ci.yml)
+[![release v0.5.0](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/glfenix/autofan-for-tyanS8030/releases/tag/v0.5.0)
+[![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Демон для **TYAN S8030GM2NE** (и родственных плат MiTAC/S8030) с BMC AMI MegaRAC:
 плавно крутит корпусные вентиляторы по температуре **нескольких** датчиков,
 учитывает мощность GPU как опережающий сигнал и никогда не снижает обороты,
@@ -40,29 +44,127 @@
 | одна кривая на всё | несколько групп вентиляторов: свои PWM, свои источники, своя кривая, свой аварийный режим |
 | перечитать конфиг нельзя | `systemctl reload` (SIGHUP); битый конфиг не роняет сервис |
 
-## Быстрый старт
+## Что нужно, чтобы это заработало
+
+| требование | чем проверить | комментарий |
+|---|---|---|
+| `ipmitool` | `ipmitool -V` | демон ходит в BMC через него как через внешнюю программу (`BMC_TOOL`), своих IPMI-сокетов здесь нет |
+| доступ к BMC — локально **или** по сети | `ls -l /dev/ipmi0` / `nc -zuv <адрес_BMC> 623` | локальный доступ дают модули `ipmi_msghandler`, `ipmi_si`, `ipmi_devintf`: `modprobe ipmi_si ipmi_devintf`. По сети нужен порт 623/udp и включённый `lanplus` в настройках BMC |
+| root (или право на `/dev/ipmi0`) | `id -u` | запись ШИМ привилегированному не принадлежит; в systemd unit root по умолчанию |
+| Go 1.24+ — **только для сборки** | `go version` | на хосте достаточно одного бинарника и конфига; тулчейн на сервере не нужен (архив `make dist`) |
+| `qemu-guest-agent` в госте + `qm` | `qm guest exec <vmid> true` | нужно только для GPU, проброшенной в виртуальную машину (`SRCn_VM=`). Без него карту читают `nvidia-smi` на том же хосте |
+
+Работает на **TYAN S8030GM2NE** (прошивки BMC 4.11 и 6.02) и родственных платах
+MiTAC/S8030. Другое железо — это те же переменные, но другие каналы ШИМ,
+имена датчиков и своя калибровка тахометров: [docs/TUNING.md](docs/TUNING.md).
+
+## Обязательные переменные
+
+Демон не стартует без нескольких переменных; остальное имеет значения по умолчанию
+(полный справочник — [docs/CONFIG.md](docs/CONFIG.md)).
+
+| переменная | когда | что это |
+|---|---|---|
+| `BMC_INTERFACE` | всегда | `open` — локально через `/dev/ipmi0`; `lanplus` / `lan` — по сети. Другое значение — ошибка конфигурации |
+| `BMC_HOST` | при `lanplus`/`lan` | адрес BMC |
+| `BMC_USER` | при `lanplus`/`lan` | пользователь BMC с правом `Administrator` (обычно заведён в BIOS Setup → BMC Network / Users) |
+| `BMC_PASSWORD_FILE` | при `lanplus`/`lan` | файл с паролем, `chmod 600`. Пароль **никогда** не передаётся аргументом (`-P`), иначе он виден в `ps` всем, кто на хосте смотрит |
+| `SRCn_NAME` + `SRCn_TYPE` + `SRCn_SENSOR`/`SRCn_SENSORS` | всегда, ≥1 источник | что мерить: `gpu`, `bmc`, `hwmon` |
+| `Gn_NAME` + `Gn_PWM` + `Gn_SOURCES` + `Gn_CURVE` | всегда, ≥1 группа | куда писать ШИМ, по каким источникам решать и с какой кривой |
+
+`autofan -c <файл> probe` разбирает конфиг и прямо говорит, чего не хватает (устройство не
+найдено, группа ссылается на неизвестный источник, кривая вне `MIN_DUTY..MAX_DUTY`).
+
+### Пароль: где взять и как не светить
+
+В репозитории ни логинов, ни паролей — файл с паролем живёт только на хосте и в
+git не попадает (`.gitignore` бережёт `*.pass`, `secrets/`, `.env`).
 
 ```bash
-apt-get install -y ipmitool            # на управляющем хосте
-make                                   # сборка -> ./autofan
-./autofan -c examples/autofan.conf --dry-run probe    # смотрим датчики, ничего не пишем
-sudo ./install.sh                      # бинарник + конфиг + unit + проверочный probe
-sudo ./install.sh --enable             # и включение сервиса
+install -d -m 700 /etc/autofan
+# read -rs: пароль не попадёт ни в историю bash, ни в ps
+read -rs -p 'пароль BMC: ' p && printf '%s\n' "$p" | install -m 600 /dev/stdin /etc/autofan/bmc.pass && unset p
+
+ipmitool -I lanplus -H <адрес_BMC> -U <пользователь> -f /etc/autofan/bmc.pass sdr info   # проверка связности
+```
+
+## Быстрый старт: локально, через `/dev/ipmi0`
+
+```bash
+apt-get install -y ipmitool                            # на управляющем хосте
+git clone https://github.com/glfenix/autofan-for-tyanS8030.git
+cd autofan-for-tyanS8030 && make                       # сборка -> ./autofan
+sudo install -d -m 755 /etc/autofan
+sudo cp -n examples/autofan.conf /etc/autofan/autofan.conf   # первый конфиг (существующий не трогает)
+sudo $EDITOR /etc/autofan/autofan.conf                 # свои датчики и кривые: docs/TUNING.md
+./autofan -c /etc/autofan/autofan.conf --dry-run probe # читаем датчики, в BMC не пишем
+sudo ./install.sh                       # бинарник + конфиг + unit + проверочный probe
+sudo ./install.sh --enable              # и включение сервиса
 journalctl -u autofan -f
 ```
 
-Проверить себя руками, без демона:
+`install.sh` не перезаписывает существующий `/etc/autofan/autofan.conf`: рабочие
+настройки дороже образца. Сравнить самому — `diff /etc/autofan/autofan.conf examples/autofan.conf`.
+
+## Быстрый старт: по сети, `lanplus` (BMC другой машины или `/dev/ipmi0` занят)
 
 ```bash
-autofan -c /etc/autofan/autofan.conf probe     # конфиг, датчики, источники
-autofan -c /etc/autofan/autofan.conf status    # сохранённое состояние + тахометры
-autofan -c /etc/autofan/autofan.conf once      # один цикл с реальной записью
-autofan -c /etc/autofan/autofan.conf set 2 60  # вручную: PWM2 = 60 %
-autofan -c /etc/autofan/autofan.conf restore   # вернуть ON_EXIT_DUTY
+# 1. файл с паролем — см. выше
+# 2. в конфиге вместо open:
+#    BMC_INTERFACE=lanplus
+#    BMC_HOST=<адрес_BMC>
+#    BMC_USER=<пользователь_BMC>
+#    BMC_PASSWORD_FILE=/etc/autofan/bmc.pass
+#    BMC_CIPHER=17          # если прошивка 17 не принимает — 3
+#    POLL_INTERVAL=30        # по сети каждый опрос дороже, 20 с уже впритык
+./autofan -c /etc/autofan/autofan.conf --dry-run probe   # конфиг + датчики, без записи
+sudo ./autofan -c /etc/autofan/autofan.conf once         # один цикл с реальной записью
+sudo ./install.sh --enable
 ```
 
-Флаги (`-v`, `--dry-run`) ставятся **до** команды: Go не разбирает флаги после
-позиционного аргумента. Флаг `-v` важнее, чем `VERBOSE=0` в конфиге.
+## Как запускать
+
+| команда | что делает |
+|---|---|
+| `autofan` / `autofan run` | демон: цикл раз в `POLL_INTERVAL` секунд, вверх сразу / вниз шагами и с выдержкой |
+| `autofan once` | ровно один цикл с реальной записью — самый быстрый способ проверить кривую |
+| `autofan probe` | разобрать конфиг, показать датчики, источники и текущий duty; только читает (`--dry-run` — тем более) |
+| `autofan status` | сохранённое состояние (`STATE_FILE`) + тахометры: чем крутится сейчас; только читает |
+| `autofan set <pwm> <duty>` | вручную, например `set 2 60` — PWM2 = 60 %; пишет в BMC, к группам отношения не имеет |
+| `autofan restore` | вернуть группы на `ON_EXIT_DUTY` |
+
+Флаги (`-c`, `-v`, `--dry-run`, `--once`) ставятся **до** команды: Go не
+разбирает флаги после позиционного аргумента. Флаг `-v` важнее, чем `VERBOSE=0`
+в конфиге. Конфиг по умолчанию — `/etc/autofan/autofan.conf`.
+
+Демоном (то, что ставит `install.sh`):
+
+```bash
+systemctl start|stop|restart|status autofan
+systemctl reload autofan        # SIGHUP: перечитать конфиг, не останавливая контур
+journalctl -u autofan -f        # -u autofan, а не /var/log: логи в journald
+systemctl edit autofan          # переопределить переменные без правки основного конфига
+```
+
+В unit'е `Type=exec`, `KillSignal=SIGTERM` (штатный выход с возвратом на
+`ON_EXIT_DUTY`), `TimeoutStopSec=60`, `Restart=always`: после `SIGKILL` или
+падения BMC вентиляторы остаются на последнем duty — понижать их без
+достоверных данных демон не умеет в принципе.
+
+## Переменные окружения
+
+Порядок силы: **флаг → переменная окружения → файл конфига**. Поверх файла
+накладываются только переменные autofan: `POLL_*`, `BMC_*`, `SRC*`/`SOURCE*`,
+`G1_`…`G6_`, `RPM_*`, `STARTUP*`, `STATE_*`, `VERIFY_*`, `FAILSAFE_*`,
+`ON_EXIT_*`, `CRITICAL_TEMP`, `PROFILE`, `VERBOSE`, `AUTOFAN_*`. Так можно
+попробовать кривую, не трогая рабочий файл:
+
+```bash
+sudo -E G1_CURVE='60:50 70:70 78:85' VERBOSE=1 ./autofan -c /etc/autofan/autofan.conf once
+```
+
+Постоянно — `EnvironmentFile=/etc/autofan/env` или drop-in
+(`systemctl edit autofan` → `[Service]` / `Environment=G1_MIN_DUTY=40`).
 
 ## Конфиг
 
@@ -130,27 +232,44 @@ VRM/памяти. Карта при этом сама холодная (42 °C �
   (`Hardware Monitor → Smart Fan`): программно возврата в авто на этой
   прошивке нет.
 
-## Репозиторий
+## Описание репозитория
 
 ```
-*.go                    демон (Go, одна зависимость — yaml.v3) + тесты
+*.go                    демон (Go, одна зависимость — yaml.v3) + тесты рядом
+  main.go               флаги, команды (run|once|probe|status|set|restore), сигналы
+  config.go             парсер KEY=VALUE и YAML, переменные окружения, валидация
+  sensors.go            чтение BMC-датчиков, nvidia-smi/NVML, hwmon, qemu-guest-agent
+  control.go            кривые, упреждение по ваттам, гистерезис, аварийный режим
+  bmc.go                профили команд IPMI, кодирование байт, тахометры
+  state.go              /var/lib/autofan/state.json: последний duty для рестартов
 examples/               рабочая конфигурация (KEY=VALUE), YAML-аналог, systemd unit
-docs/                   железо, алгоритм, справочник конфига, методика настройки,
-                        результаты замеров, дорожная карта, подготовка к публикации
-scripts/                измерительные скрипты и тестовая нагрузка
-data/                   сырые замеры (CSV, логи)
-install.sh              установка на хост
-Makefile                make / make test / make dist / make deploy HOST=…
+docs/                   HARDWARE · DESIGN · CONFIG · TUNING · RESULTS · ROADMAP · PUBLISH
+scripts/                измерительные скрипты и тестовая нагрузка (burn.c, membw_stream.c)
+data/                   сырые замеры (CSV + лог прогона 2026-10-30)
+install.sh              установка на хост: бинарник, конфиг, unit, проверочный probe
+Makefile                make (=release-check) / test / dist / deploy / module
+.github/workflows/      CI: gofmt, vet, тесты, сборка, синтаксис скриптов
 ```
 
-Тесты: `make test` (27 тестов — парсер конфига, кодирование IPMI-команд,
-кривые, гистерезис, аварийные режимы, калибровка тахометров).
-CI: `.github/workflows/ci.yml` (fmt + vet + test + build + синтаксис скриптов).
+Вопрос → куда смотреть:
 
-Своё железо: [docs/TUNING.md](docs/TUNING.md).
-Планы и спорные решения: [docs/ROADMAP.md](docs/ROADMAP.md).
-Публикация на GitHub и выбор лицензии: [docs/PUBLISH.md](docs/PUBLISH.md).
-Протокол поиска рабочих команд BMC: [docs/HARDWARE.md](docs/HARDWARE.md).
+| вопрос | файл |
+|---|---|
+| «что за переменная и что будет, если её поменять» | [docs/CONFIG.md](docs/CONFIG.md) |
+| «как подобрать кривую/FLOOR/калибровку под своё шасси» | [docs/TUNING.md](docs/TUNING.md) |
+| «почему вверх сразу, а вниз медленно / почему ноль — не холод» | [docs/DESIGN.md](docs/DESIGN.md) |
+| «какие команды принимает мой BMC, какие разъёмы чем являются» | [docs/HARDWARE.md](docs/HARDWARE.md) |
+| «какие температуры и обороты получились на самом деле» | [docs/RESULTS.md](docs/RESULTS.md), `data/` |
+| «что дальше и что здесь спорно» | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| «как это публиковать и что с лицензией» | [docs/PUBLISH.md](docs/PUBLISH.md) |
+
+Собрать и проверить себя: `make` (он же `make release-check`: gofmt, `go vet`,
+тесты, сборка). Тесты: `make test` (27 тестов — парсер конфига, кодирование
+IPMI-команд, кривые, гистерезис, аварийные режимы, калибровка тахометров); они
+не требуют железа, поэтому прогоняются и в CI: `.github/workflows/ci.yml`.
+Архив для хоста без тулчейна Go: `make dist` → `dist/autofan-<версия>.tgz`
+(`install.sh` внутри). Обновления по схеме: ветка → `make release-check` → PR →
+merge → `git tag v0.x.y`.
 
 ## Лицензия
 
